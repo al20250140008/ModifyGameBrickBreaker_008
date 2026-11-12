@@ -646,3 +646,12 @@ def main():
         game.draw()
 
 
+if __name__ == "__main__":
+    try:
+        main()
+    except SystemExit:
+        raise
+    except Exception:
+        import traceback
+        traceback.print_exc()
+        input("Error! Tekan Enter untuk menutup...")
