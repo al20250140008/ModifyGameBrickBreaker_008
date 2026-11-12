@@ -285,3 +285,258 @@ class Capsule:
         pygame.draw.rect(canvas, c, self.rect, border_radius=10)
         draw_text(canvas, self.kind, SMALL, BG, self.rect.center)
 
+
+# ---------------------------------------------------------------- Game
+class Game:
+    def __init__(self):
+        self.sfx = SoundBank()
+        self.stars = [[random.randint(0, WIDTH - 1), random.randint(0, HEIGHT - 1), random.uniform(0.2, 1)]
+                      for _ in range(90)]
+        self.best = 0
+        self.state = "menu"
+        self.shake = 0.0
+        self.warp = False
+        self.balls = []
+        self.bricks = []
+        self.capsules = []
+        self.particles = []
+        self.texts = []
+        self.effects = {"W": 0, "S": 0, "F": 0}
+        self.level, self.score, self.lives = 1, 0, 3
+        self.energy, self.combo = 100.0, 0
+        self.descent_timer, self.interval = 10, 10
+        self.paddle = pygame.Rect(0, PADDLE_Y, 130, 14)
+        self.paddle.centerx = WIDTH // 2
+        self.paddle_w = 130.0
+        self.last_mouse_x = pygame.mouse.get_pos()[0]
+
+    def new_game(self):
+        self.level, self.score, self.lives = 1, 0, 3
+        self.energy, self.combo = 100.0, 0
+        self.start_level()
+        self.state = "play"
+
+    def start_level(self):
+        self.paddle_w = 130.0
+        self.paddle = pygame.Rect(0, PADDLE_Y, 130, 14)
+        self.paddle.centerx = WIDTH // 2
+        self.effects = {"W": 0, "S": 0, "F": 0}
+        self.bricks = self.build_level(self.level)
+        self.capsules, self.particles, self.texts = [], [], []
+        self.interval = max(6.0, 15 - self.level)
+        self.descent_timer = self.interval
+        self.shake = 0.0
+        self.reset_ball()
+
+    def reset_ball(self):
+        self.balls = [Ball(self.paddle.centerx, PADDLE_Y - 10, 8, self.base_speed(), WHITE)]
+        self.combo = 0
+
+    def base_speed(self):
+        return 420 + self.level * 25
+
+    def build_level(self, level):
+        rows, cols, bw, bh, gap = min(4 + level, 9), 10, 76, 26, 6
+        left = (WIDTH - (cols * bw + (cols - 1) * gap)) // 2
+        pattern = level % 4
+        bricks = []
+        for r in range(rows):
+            for c in range(cols):
+                if pattern == 1 and (r + c) % 2:
+                    continue
+                if pattern == 2 and abs(c - 4.5) > r + 1.5:
+                    continue
+                if pattern == 3 and r > 2 + 2 * math.sin(c * 0.9) + 2:
+                    continue
+                hp = 1
+                if level > 1 and r < rows // 3:
+                    hp = random.choice([2, 3])
+                elif level > 0 and r < 2 * rows // 3:
+                    hp = random.choice([1, 2])
+                rect = pygame.Rect(left + c * (bw + gap), 70 + r * (bh + gap), bw, bh)
+                bricks.append(Brick(rect, hp, bomb=random.random() < 0.07))
+        if not bricks:
+            bricks.append(Brick(pygame.Rect(WIDTH // 2 - 38, 100, bw, bh), 1))
+        return bricks
+
+    # --------------------------------------------------- game mechanics
+    def damage(self, brick, amount=1):
+        if brick not in self.bricks:
+            return
+        brick.hp -= amount
+        if brick.hp > 0:
+            self.score += 5
+            self.burst(brick.rect.center, brick.color, 5)
+            self.sfx.play("tick")
+            return
+        self.bricks.remove(brick)
+        self.combo += 1
+        self.score += 10 * max(1, self.combo)
+        self.energy = min(100, self.energy + 4)
+        self.burst(brick.rect.center, brick.color, 22)
+        # suara hewan!
+        label = self.sfx.play_animal()
+        if label:
+            self.texts.append(FloatText(label, brick.rect.centerx, brick.rect.centery, brick.color))
+        if random.random() < 0.13:
+            self.capsules.append(Capsule(brick.rect.centerx, brick.rect.centery, random.choice("MWSFLMWSF")))
+        if brick.bomb:
+            self.shake = 14
+            self.sfx.play("boom")
+            cx, cy = brick.rect.center
+            for other in self.bricks[:]:
+                ox, oy = other.rect.center
+                if math.hypot(ox - cx, oy - cy) < 115:
+                    self.damage(other, 2)
+
+    def burst(self, pos, color, n):
+        self.particles += [Particle(pos[0], pos[1], color) for _ in range(n)]
+
+    def apply_powerup(self, kind):
+        self.sfx.play("powerup")
+        if kind == "M":
+            for b in self.balls[:2]:
+                if b.stuck:
+                    continue
+                for off in (-0.5, 0.5):
+                    nb = Ball(b.posx, b.posy, b.radius, b.speed, b.color)
+                    ang = math.atan2(b.vx, -b.vy) + off
+                    nb.vx, nb.vy, nb.stuck = math.sin(ang), -math.cos(ang), False
+                    self.balls.append(nb)
+        elif kind == "W":
+            self.effects["W"] = 10
+        elif kind == "S":
+            self.effects["S"] = 8
+        elif kind == "F":
+            self.effects["F"] = 6
+        elif kind == "L":
+            self.lives = min(5, self.lives + 1)
+        self.score += 50
+
+    def ball_vs_brick(self, ball):
+        fire = self.effects["F"] > 0
+        for b in self.bricks[:]:
+            cx = max(b.rect.left, min(ball.posx, b.rect.right))
+            cy = max(b.rect.top, min(ball.posy, b.rect.bottom))
+            if math.hypot(ball.posx - cx, ball.posy - cy) > ball.radius:
+                continue
+            self.damage(b, 3 if fire else 1)
+            if not fire:
+                r = ball.radius
+                overlaps = {
+                    "l": ball.posx + r - b.rect.left, "r": b.rect.right - (ball.posx - r),
+                    "t": ball.posy + r - b.rect.top, "b": b.rect.bottom - (ball.posy - r),
+                }
+                side = min(overlaps, key=overlaps.get)
+                if side == "l":
+                    ball.vx = -abs(ball.vx)
+                elif side == "r":
+                    ball.vx = abs(ball.vx)
+                elif side == "t":
+                    ball.vy = -abs(ball.vy)
+                else:
+                    ball.vy = abs(ball.vy)
+                return
+
+    def ball_vs_paddle(self, ball):
+        if ball.vy <= 0 or not ball.getRect().colliderect(self.paddle):
+            return
+        off = max(-1, min(1, (ball.posx - self.paddle.centerx) / (self.paddle.w / 2)))
+        ang = math.radians(off * 62)
+        ball.vx, ball.vy = math.sin(ang), -math.cos(ang)
+        ball.posy = self.paddle.top - ball.radius
+        self.combo = 0
+        self.burst((ball.posx, self.paddle.top), CYAN, 6)
+        self.sfx.play("paddle")
+
+    # ------------------------------------------------------------ update
+    def update(self, dt, keys):
+        warp = (keys[pygame.K_LSHIFT] or keys[pygame.K_RSHIFT]) and self.energy > 0
+        if warp:
+            self.energy = max(0, self.energy - 35 * dt)
+            dt *= 0.35
+        else:
+            self.energy = min(100, self.energy + 4 * dt)
+        self.warp = bool(warp)
+
+        target_w = 210 if self.effects["W"] > 0 else 130
+        self.paddle_w += (target_w - self.paddle_w) * min(1, dt * 12)
+        cx = self.paddle.centerx
+        self.paddle.w = int(self.paddle_w)
+        self.paddle.centerx = cx
+
+        mx = pygame.mouse.get_pos()[0]
+        if mx != self.last_mouse_x:
+            self.paddle.centerx = mx
+            self.last_mouse_x = mx
+        move = (keys[pygame.K_RIGHT] or keys[pygame.K_d]) - (keys[pygame.K_LEFT] or keys[pygame.K_a])
+        self.paddle.x += int(move * 800 * dt)
+        self.paddle.clamp_ip(screen.get_rect())
+
+        for k in self.effects:
+            self.effects[k] = max(0, self.effects[k] - dt)
+
+        slow = 0.6 if self.effects["S"] > 0 else 1
+        for ball in self.balls[:]:
+            if ball.stuck:
+                ball.posx, ball.posy = self.paddle.centerx, PADDLE_Y - ball.radius - 2
+                continue
+            ball.speed = self.base_speed() * slow
+            if ball.update(dt):
+                self.balls.remove(ball)
+                continue
+            if ball.wall_hit:
+                ball.wall_hit = False
+                self.sfx.play("tick")
+            self.ball_vs_paddle(ball)
+            self.ball_vs_brick(ball)
+
+        if not self.balls:
+            self.lives -= 1
+            self.shake = 10
+            if self.lives <= 0:
+                self.game_over()
+                return
+            self.sfx.play("lose")
+            self.reset_ball()
+
+        for c in self.capsules[:]:
+            c.fall(dt)
+            if c.rect.colliderect(self.paddle):
+                self.apply_powerup(c.kind)
+                self.capsules.remove(c)
+            elif c.rect.top > HEIGHT:
+                self.capsules.remove(c)
+
+        self.descent_timer -= dt
+        if self.descent_timer <= 0:
+            self.descent_timer = self.interval
+            self.shake = 6
+            for b in self.bricks:
+                b.rect.y += 24
+            if any(b.rect.bottom >= PADDLE_Y - 20 for b in self.bricks):
+                self.game_over()
+                return
+
+        for p in self.particles[:]:
+            p.update(dt)
+            if p.life <= 0:
+                self.particles.remove(p)
+        for t in self.texts[:]:
+            t.update(dt)
+            if t.life <= 0:
+                self.texts.remove(t)
+        self.shake = max(0.0, self.shake - 40 * dt)
+
+        if not self.bricks:
+            self.level += 1
+            self.score += 200
+            self.sfx.play("levelup")
+            self.start_level()
+
+    def game_over(self):
+        self.best = max(self.best, self.score)
+        self.state = "over"
+        self.sfx.play("gameover")
+
+   
