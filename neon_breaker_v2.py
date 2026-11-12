@@ -30,3 +30,258 @@ glow_cache = {}
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
+def glow(color, radius):
+    key = (color, radius)
+    if key not in glow_cache:
+        s = pygame.Surface((radius * 4, radius * 4), pygame.SRCALPHA)
+        for i in range(8, 0, -1):
+            pygame.draw.circle(s, (*color, 12), (radius * 2, radius * 2), radius + i * radius // 3)
+        glow_cache[key] = s
+    return glow_cache[key]
+
+
+def draw_text(surf, text, font, color, center):
+    img = font.render(text, True, color)
+    surf.blit(img, img.get_rect(center=(int(center[0]), int(center[1]))))
+
+
+# ------------------------------------------------------------- Suara
+class SoundBank:
+    """Membuat dan memutar efek suara. Kalau audio tidak tersedia, game tetap jalan."""
+
+    def __init__(self):
+        self.on = False
+        self.muted = False
+        self.last_animal = 0.0
+        self.sounds = {}
+        self.animals = []  # (nama_file, label)
+        try:
+            if not pygame.mixer.get_init():
+                pygame.mixer.init(22050, -16, 1, 512)
+            self.sr, fmt, self.ch = pygame.mixer.get_init()
+            if fmt != -16:
+                return
+            pygame.mixer.set_num_channels(24)
+            self.build()
+            self.on = True
+        except Exception as err:
+            print("Audio dimatikan:", err)
+
+    def make(self, duration, freq_fn, harmonics=((1, 1.0),), vib=(0, 0), noise=0.0,
+             pulse=0, decay=None, vol=0.5):
+        n = int(self.sr * duration)
+        buf = array("h")
+        phase = 0.0
+        total = sum(a for _, a in harmonics)
+        for i in range(n):
+            t = i / self.sr
+            p = i / n
+            f = freq_fn(p)
+            if vib[1]:
+                f *= 1 + vib[1] * math.sin(math.tau * vib[0] * t)
+            phase += math.tau * f / self.sr
+            v = sum(a * math.sin(h * phase) for h, a in harmonics) / total
+            if noise:
+                v = v * (1 - noise) + random.uniform(-1, 1) * noise
+            if pulse:
+                v *= 0.55 + 0.45 * math.sin(math.tau * pulse * t)
+            if decay is None:
+                env = min(1.0, p / 0.05) * min(1.0, (1 - p) / 0.2)
+            else:
+                env = min(1.0, p / 0.02) * (1 - p) ** decay
+            s = int(max(-1.0, min(1.0, v * env * vol)) * 32767)
+            for _ in range(self.ch):
+                buf.append(s)
+        return pygame.mixer.Sound(buffer=buf.tobytes())
+
+    def add(self, name, builder):
+        path = os.path.join(BASE_DIR, "sounds", name + ".wav")
+        try:
+            if os.path.exists(path):
+                self.sounds[name] = pygame.mixer.Sound(path)
+            else:
+                self.sounds[name] = builder()
+        except Exception as err:
+            print("Gagal memuat suara", name, err)
+
+    def build(self):
+        rich = ((1, 1.0), (2, 0.8), (3, 0.7), (4, 0.55), (5, 0.45), (6, 0.35), (7, 0.25))
+        add = self.add
+        # ----- hewan
+        add("meong", lambda: self.make(0.45, lambda p: 450 + 520 * math.sin(math.pi * p) ** 0.8,
+                                       ((1, 1.0), (2, 0.6), (3, 0.4), (4, 0.25)), vib=(7, 0.02)))
+        add("guk", lambda: self.make(0.22, lambda p: 430 - 230 * p, rich, noise=0.25, decay=1.6, vol=0.6))
+        add("kwek", lambda: self.make(0.28, lambda p: 340 - 40 * p, rich, vib=(38, 0.07), noise=0.1))
+        add("ngoek", lambda: self.make(0.36, lambda p: 170 - 80 * p, rich, vib=(18, 0.12), noise=0.15))
+        add("muu", lambda: self.make(0.75, lambda p: 130 + 35 * math.sin(math.pi * p) - 25 * p,
+                                     ((1, 1.0), (2, 0.7), (3, 0.5), (4, 0.3)), vib=(5, 0.03)))
+
+        def rooster(p):
+            if p < 0.2:
+                return 600 + 200 * (p / 0.2)
+            if p < 0.4:
+                return 750 + 200 * ((p - 0.2) / 0.2)
+            if p < 0.6:
+                return 900 + 200 * ((p - 0.4) / 0.2)
+            return 1100 - 500 * ((p - 0.6) / 0.4)
+        add("kukuruyuk", lambda: self.make(0.7, rooster, ((1, 1.0), (2, 0.5), (3, 0.3)), vib=(9, 0.02)))
+        add("kroak", lambda: self.make(0.3, lambda p: 220 + 30 * p, rich, pulse=28, noise=0.08))
+        add("cip", lambda: self.make(0.12, lambda p: 2200 + 700 * p, ((1, 1.0), (2, 0.2)), vol=0.4))
+        add("mbek", lambda: self.make(0.5, lambda p: 330 - 40 * p, rich, vib=(30, 0.1)))
+        # ----- efek lain
+        add("tick", lambda: self.make(0.05, lambda p: 700, ((1, 1.0),), decay=1.0, vol=0.25))
+        add("paddle", lambda: self.make(0.1, lambda p: 220 - 110 * p, ((1, 1.0), (2, 0.4)), decay=1.2, vol=0.5))
+        add("boom", lambda: self.make(0.55, lambda p: 90 - 55 * p, ((1, 1.0), (2, 0.5)), noise=0.6,
+                                      decay=1.4, vol=0.7))
+        add("powerup", lambda: self.make(0.28, lambda p: 600 + 700 * p, ((1, 1.0), (2, 0.4), (3, 0.2)), vol=0.4))
+        add("lose", lambda: self.make(0.5, lambda p: 420 - 250 * p, ((1, 1.0), (2, 0.5)), vol=0.45))
+        add("gameover", lambda: self.make(1.0, lambda p: 400 - 300 * p, ((1, 1.0), (2, 0.6), (3, 0.3)),
+                                          vib=(6, 0.03), vol=0.5))
+        add("levelup", lambda: self.make(0.5, lambda p: 500 if p < 0.33 else (650 if p < 0.66 else 800),
+                                         ((1, 1.0), (2, 0.4)), vol=0.4))
+        self.animals = [
+            ("meong", "MEONG!"), ("guk", "GUK!"), ("kwek", "KWEK!"), ("ngoek", "NGOEK!"),
+            ("muu", "MUUU!"), ("kukuruyuk", "KOKOKOK!"), ("kroak", "KROAK!"),
+            ("cip", "CIP!"), ("mbek", "MBEEK!"),
+        ]
+        self.animals = [a for a in self.animals if a[0] in self.sounds]
+
+    def play(self, name):
+        if self.on and not self.muted and name in self.sounds:
+            self.sounds[name].play()
+
+    def play_animal(self):
+        """Putar suara hewan acak, kembalikan teks label (atau None)."""
+        if not (self.on and self.animals):
+            return None
+        name, label = random.choice(self.animals)
+        now = time.time()
+        if now - self.last_animal < 0.06:  # cegah terlalu ramai
+            return label
+        self.last_animal = now
+        self.play(name)
+        return label
+
+
+# ---------------------------------------------------------------- Ball
+class Ball:
+    def __init__(self, posx, posy, radius, speed, color):
+        self.posx, self.posy = posx, posy
+        self.radius = radius
+        self.speed = speed
+        self.color = color
+        self.vx, self.vy = 0.0, 0.0
+        self.stuck = True
+        self.trail = []
+        self.wall_hit = False
+
+    def launch(self):
+        ang = math.radians(random.uniform(-25, 25))
+        self.vx, self.vy = math.sin(ang), -math.cos(ang)
+        self.stuck = False
+
+    def display(self, canvas, fire=False):
+        col = ORANGE if fire else self.color
+        for i, (tx, ty) in enumerate(self.trail):
+            r = max(1, int(self.radius * i / len(self.trail)))
+            pygame.draw.circle(canvas, col, (int(tx), int(ty)), r)
+        g = glow(col, self.radius)
+        canvas.blit(g, (int(self.posx - self.radius * 2), int(self.posy - self.radius * 2)))
+        pygame.draw.circle(canvas, WHITE, (int(self.posx), int(self.posy)), self.radius)
+
+    def update(self, dt):
+        """Return True kalau bola jatuh ke bawah."""
+        self.trail.append((self.posx, self.posy))
+        if len(self.trail) > 14:
+            self.trail.pop(0)
+        self.posx += self.vx * self.speed * dt
+        self.posy += self.vy * self.speed * dt
+        if self.posx <= self.radius:
+            self.posx, self.vx = self.radius, abs(self.vx)
+            self.wall_hit = True
+        elif self.posx >= WIDTH - self.radius:
+            self.posx, self.vx = WIDTH - self.radius, -abs(self.vx)
+            self.wall_hit = True
+        if self.posy <= self.radius:
+            self.posy, self.vy = self.radius, abs(self.vy)
+            self.wall_hit = True
+        return self.posy >= HEIGHT + self.radius
+
+    def hit(self):
+        self.vy *= -1
+
+    def getRect(self):
+        r = self.radius
+        return pygame.Rect(int(self.posx - r), int(self.posy - r), r * 2, r * 2)
+
+
+# ------------------------------------------------------------- Objects
+class Brick:
+    def __init__(self, rect, hp, bomb=False):
+        self.rect, self.hp, self.bomb = rect, hp, bomb
+
+    @property
+    def color(self):
+        return ORANGE if self.bomb else HP_COLORS[max(1, min(3, self.hp))]
+
+    def draw(self, canvas):
+        c = self.color
+        pygame.draw.rect(canvas, tuple(v // 3 for v in c), self.rect, border_radius=5)
+        pygame.draw.rect(canvas, c, self.rect, 2, border_radius=5)
+        if self.bomb:
+            draw_text(canvas, "*", FONT, WHITE, self.rect.center)
+
+
+class Particle:
+    def __init__(self, x, y, color, speed=260):
+        a, s = random.uniform(0, math.tau), random.uniform(40, speed)
+        self.x, self.y = x, y
+        self.vx, self.vy = math.cos(a) * s, math.sin(a) * s
+        self.life = self.max = random.uniform(0.3, 0.8)
+        self.color = color
+
+    def update(self, dt):
+        self.x += self.vx * dt
+        self.y += self.vy * dt
+        self.vy += 300 * dt
+        self.life -= dt
+
+    def draw(self, canvas):
+        r = max(1, int(4 * self.life / self.max))
+        pygame.draw.circle(canvas, self.color, (int(self.x), int(self.y)), r)
+
+
+class FloatText:
+    """Teks melayang (MEONG!, GUK!, dst)."""
+
+    def __init__(self, text, x, y, color):
+        self.text, self.x, self.y, self.color = text, x, y, color
+        self.life = 0.8
+
+    def update(self, dt):
+        self.y -= 50 * dt
+        self.life -= dt
+
+    def draw(self, canvas):
+        draw_text(canvas, self.text, FONT, self.color, (self.x, self.y))
+
+
+class Capsule:
+    COLORS = {"M": CYAN, "W": GREEN, "S": MAGENTA, "F": ORANGE, "L": YELLOW}
+
+    def __init__(self, x, y, kind):
+        self.fy = float(y)
+        self.rect = pygame.Rect(0, 0, 38, 20)
+        self.rect.center = (int(x), int(y))
+        self.kind = kind
+
+    def fall(self, dt):
+        self.fy += 170 * dt
+        self.rect.y = int(self.fy)
+
+    def draw(self, canvas):
+        c = self.COLORS[self.kind]
+        canvas.blit(glow(c, 12), (self.rect.centerx - 24, self.rect.centery - 24))
+        pygame.draw.rect(canvas, c, self.rect, border_radius=10)
+        draw_text(canvas, self.kind, SMALL, BG, self.rect.center)
+
