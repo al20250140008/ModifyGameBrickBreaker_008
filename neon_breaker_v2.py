@@ -539,4 +539,110 @@ class Game:
         self.state = "over"
         self.sfx.play("gameover")
 
-   
+    # -------------------------------------------------------------- draw
+    def draw_background(self, canvas):
+        canvas.fill(BG)
+        for s in self.stars:
+            s[1] = (s[1] + s[2] * 0.6) % HEIGHT
+            v = int(60 + 120 * s[2])
+            canvas.set_at((int(s[0]), int(s[1])), (v, v, 255))
+
+    def draw(self):
+        canvas = pygame.Surface((WIDTH, HEIGHT))
+        self.draw_background(canvas)
+
+        if self.state == "menu":
+            draw_text(canvas, "NEON BREAKER", BIG, CYAN, (WIDTH // 2, 240))
+            draw_text(canvas, "D E S C E N T", FONT, MAGENTA, (WIDTH // 2, 295))
+            draw_text(canvas, "Hancurkan brick sebelum mereka turun menimpamu!", SMALL, WHITE, (WIDTH // 2, 370))
+            draw_text(canvas, "SHIFT = Time Warp   |   M W S F L = power-up   |   * = bom", SMALL, WHITE, (WIDTH // 2, 400))
+            snd = "suara hewan aktif  (N = bisu)" if self.sfx.on else "audio tidak tersedia"
+            draw_text(canvas, snd, SMALL, GREEN, (WIDTH // 2, 430))
+            draw_text(canvas, "Tekan SPASI / klik untuk mulai", FONT, YELLOW, (WIDTH // 2, 490))
+        else:
+            for b in self.bricks:
+                b.draw(canvas)
+            for c in self.capsules:
+                c.draw(canvas)
+            for p in self.particles:
+                p.draw(canvas)
+            for ball in self.balls:
+                ball.display(canvas, fire=self.effects["F"] > 0)
+            for t in self.texts:
+                t.draw(canvas)
+
+            gl = pygame.Surface((self.paddle.w + 40, 50), pygame.SRCALPHA)
+            for i in range(5, 0, -1):
+                pygame.draw.rect(gl, (*CYAN, 25),
+                                 (20 - i * 3, 18 - i * 2, self.paddle.w + i * 6, 14 + i * 4), border_radius=12)
+            canvas.blit(gl, (self.paddle.x - 20, self.paddle.y - 18))
+            pygame.draw.rect(canvas, CYAN, self.paddle, border_radius=7)
+
+            warn = self.descent_timer < 2 and int(self.descent_timer * 6) % 2 == 0
+            pygame.draw.line(canvas, (255, 40, 80) if warn else (60, 20, 40),
+                             (0, PADDLE_Y - 20), (WIDTH, PADDLE_Y - 20), 1)
+
+            draw_text(canvas, f"SKOR {self.score}", FONT, WHITE, (90, 25))
+            draw_text(canvas, f"LEVEL {self.level}", FONT, YELLOW, (WIDTH // 2, 25))
+            draw_text(canvas, "<3 " * self.lives, FONT, MAGENTA, (WIDTH - 80, 25))
+            if self.combo > 1:
+                draw_text(canvas, f"COMBO x{self.combo}", FONT, ORANGE, (WIDTH // 2, 50))
+            pygame.draw.rect(canvas, (40, 40, 70), (20, HEIGHT - 20, 200, 8), border_radius=4)
+            bar_w = int(2 * self.energy)
+            if bar_w > 0:
+                pygame.draw.rect(canvas, MAGENTA if self.warp else CYAN,
+                                 (20, HEIGHT - 20, bar_w, 8), border_radius=4)
+            draw_text(canvas, "TIME WARP", SMALL, WHITE, (270, HEIGHT - 16))
+            if self.sfx.muted:
+                draw_text(canvas, "BISU (N)", SMALL, (150, 150, 170), (WIDTH - 60, 55))
+            y = HEIGHT - 20
+            for k, t in self.effects.items():
+                if t > 0:
+                    draw_text(canvas, f"{k} {t:.0f}s", SMALL, Capsule.COLORS[k], (WIDTH - 60, y))
+                    y -= 20
+            if any(b.stuck for b in self.balls):
+                draw_text(canvas, "SPASI / klik untuk luncurkan", SMALL, WHITE, (WIDTH // 2, PADDLE_Y - 50))
+            if self.warp:
+                tint = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+                tint.fill((120, 0, 200, 40))
+                canvas.blit(tint, (0, 0))
+
+            if self.state == "over":
+                shade = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+                shade.fill((0, 0, 0, 170))
+                canvas.blit(shade, (0, 0))
+                draw_text(canvas, "GAME OVER", BIG, MAGENTA, (WIDTH // 2, 270))
+                draw_text(canvas, f"Skor {self.score}   |   Terbaik {self.best}", FONT, WHITE, (WIDTH // 2, 345))
+                draw_text(canvas, "Tekan SPASI untuk main lagi", FONT, YELLOW, (WIDTH // 2, 420))
+
+        sh = int(self.shake)
+        off = (random.randint(-sh, sh), random.randint(-sh, sh)) if sh > 0 else (0, 0)
+        screen.fill((0, 0, 0))
+        screen.blit(canvas, off)
+        pygame.display.flip()
+
+
+def main():
+    game = Game()
+    while True:
+        dt = min(clock.tick(60) / 1000, 0.05)
+        for e in pygame.event.get():
+            if e.type == pygame.QUIT or (e.type == pygame.KEYDOWN and e.key == pygame.K_ESCAPE):
+                pygame.quit()
+                sys.exit()
+            if e.type == pygame.KEYDOWN and e.key == pygame.K_n:
+                game.sfx.muted = not game.sfx.muted
+            go = (e.type == pygame.KEYDOWN and e.key == pygame.K_SPACE) or \
+                 (e.type == pygame.MOUSEBUTTONDOWN and e.button == 1)
+            if go:
+                if game.state in ("menu", "over"):
+                    game.new_game()
+                else:
+                    for b in game.balls:
+                        if b.stuck:
+                            b.launch()
+        if game.state == "play":
+            game.update(dt, pygame.key.get_pressed())
+        game.draw()
+
+
